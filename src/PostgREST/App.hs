@@ -77,7 +77,6 @@ postgrest conf refDbStructure pool worker =
           Left err -> return $ apiRequestError err
           Right apiRequest -> do
             eClaims <- jwtClaims jwtSecret (configJwtAudience conf) (toS $ iJWT apiRequest)
-
             let authed = containsRole eClaims
                 proc = case (iTarget apiRequest, iPayload apiRequest, iPreferSingleObjectParameter apiRequest) of
                   (TargetProc qi, Just PayloadJSON{pjKeys}, s) -> findProc qi pjKeys s $ dbProcs dbStructure

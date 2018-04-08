@@ -31,17 +31,18 @@ import           Control.Monad                (fail)
 import           Control.Lens                 (preview)
 import           Crypto.JWT                   (StringOrURI,
                                                stringOrUri)
+import qualified Crypto.JWT                   as JWT
 import qualified Data.ByteString              as B
 import qualified Data.ByteString.Char8        as BS
 import qualified Data.CaseInsensitive         as CI
 import qualified Data.Configurator            as C
 import qualified Data.Configurator.Parser     as C
 import           Data.Configurator.Types      as C
-import           Data.List                    (lookup)
+import           Data.List                    (lookup, span, groupBy)
 import           Data.Monoid
 import           Data.Scientific              (floatingOrInteger)
 import           Data.String                  (String)
-import           Data.Text                    (dropAround,
+import           Data.Text                    (dropAround, pack,
                                                intercalate, lines,
                                                strip, take)
 import           Data.Text.Encoding           (encodeUtf8)
@@ -72,6 +73,7 @@ data AppConfig = AppConfig {
   , configJwtSecret         :: Maybe B.ByteString
   , configJwtSecretIsBase64 :: Bool
   , configJwtAudience       :: Maybe StringOrURI
+  , configJwtRoleClaimKey   :: Maybe [Text]
 
   , configPool              :: Int
   , configMaxRows           :: Maybe Integer
@@ -134,6 +136,7 @@ readOptions = do
           <*> (fmap encodeUtf8 . mfilter (/= "") <$> C.key "jwt-secret")
           <*> (fromMaybe False . join . fmap coerceBool <$> C.key "secret-is-base64")
           <*> parseJwtAudience "jwt-aud"
+          <*> parseJwtClaimsRoleKey "jwt-claims-role-key"
           <*> (fromMaybe 10 . join . fmap coerceInt <$> C.key "db-pool")
           <*> (join . fmap coerceInt <$> C.key "max-rows")
           <*> (mfilter (/= "") <$> C.key "pre-request")
@@ -164,6 +167,15 @@ readOptions = do
           (Just "") -> pure Nothing
           aud' -> pure aud'
 
+    parseJwtClaimsRoleKey :: Name -> C.ConfigParserM (Maybe [Text])
+    parseJwtClaimsRoleKey k =
+      C.key k >>= \case
+        Nothing -> pure Nothing -- no audience in config file
+        Just roleKeyPath -> case preview (JWT.stringOrUri . JWT.string) (roleKeyPath :: String) of
+          Nothing -> fail "Invalid Jwt claims' role key. Check your configuration."
+          (Just "") -> pure Nothing
+          Just roleKeyPath' -> pure . Just $ map pack $ separateByPrefixPeriod roleKeyPath'
+      where
     coerceInt :: (Read i, Integral i) => Value -> Maybe i
     coerceInt (Number x) = rightToMaybe $ floatingOrInteger x
     coerceInt (String x) = readMaybe $ toS x
@@ -212,6 +224,7 @@ readOptions = do
           |# jwt-secret = "foo"
           |# secret-is-base64 = false
           |# jwt-aud = "your_audience_claim"
+          |# jwt-claims-role-key = ".path.to.key" # { path: {to: {key: "role"}, ...}, ...}
           |
           |## limit rows in response
           |# max-rows = 1000
@@ -235,3 +248,8 @@ pgVersion96 = PgVersion 90600 "9.6"
 
 pgVersion95 :: PgVersion
 pgVersion95 = PgVersion 90500 "9.5"
+
+separateByPrefixPeriod :: String -> [String]
+separateByPrefixPeriod path = map
+  (\s -> snd $ span (== '.') s) $
+    groupBy (\prev next -> prev == '.' && next /= '.') path

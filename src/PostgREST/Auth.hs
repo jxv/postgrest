@@ -13,6 +13,7 @@ very simple authentication system inside the PostgreSQL database.
 -}
 module PostgREST.Auth (
     containsRole
+  , containsRoleByKey
   , jwtClaims
   , JWTAttempt(..)
   , parseJWK
@@ -24,7 +25,7 @@ import qualified Data.HashMap.Strict    as M
 import           Protolude
 
 import qualified Crypto.JOSE.Types      as JOSE.Types
-import           Crypto.JWT
+import           Crypto.JWT             hiding (keys)
 
 {-|
   Possible situations encountered with client JWTs
@@ -40,7 +41,7 @@ data JWTAttempt = JWTInvalid JWTError
 -}
 jwtClaims :: Maybe JWK -> Maybe StringOrURI -> LByteString  -> IO JWTAttempt
 jwtClaims _ _ "" = return $ JWTClaims M.empty
-jwtClaims secret audience payload =
+jwtClaims secret audience payload = do
   case secret of
     Nothing -> return JWTMissingSecret
     Just s -> do
@@ -48,9 +49,12 @@ jwtClaims secret audience payload =
       eJwt <- runExceptT $ do
         jwt <- decodeCompact payload
         verifyClaims validation s jwt
-      return $ case eJwt of
-        Left e    -> JWTInvalid e
-        Right jwt -> JWTClaims . claims2map $ jwt
+      case eJwt of
+        Left e    -> do
+          return $ JWTInvalid e
+        Right jwt -> do
+          let claims = claims2map $ jwt
+          return . JWTClaims $ claims
 
 {-|
   Whether a response from jwtClaims contains a role claim
@@ -58,6 +62,19 @@ jwtClaims secret audience payload =
 containsRole :: JWTAttempt -> Bool
 containsRole (JWTClaims claims) = M.member "role" claims
 containsRole _                  = False
+
+{-|
+  Whether a response from jwtClaims contains a custom role claim by key paths
+-}
+containsRoleByKey :: [Text] -> JWTAttempt -> Bool
+containsRoleByKey (key:keys) (JWTClaims claims) = verifyRole key keys claims
+  where
+    verifyRole k [] o = M.member k o
+    verifyRole k (k':ks) o = case M.lookup k o of
+      Nothing -> False
+      Just (Object o') -> verifyRole k' ks o'
+      Just _ -> False
+containsRoleByKey _ _ = False
 
 {-|
   Internal helper used to turn JWT ClaimSet into something
